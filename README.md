@@ -1,22 +1,27 @@
 # Pitch Deck MVP
 
-Backend-only MVP that converts free-form user text into a structured startup deck and exports it to PowerPoint.
+Небольшой Python-сервис, который превращает свободное описание стартапа в структурированную презентацию на русском языке и экспортирует результат в PowerPoint (`.pptx`).
 
-## What it does
+Проект поддерживает три сценария использования:
+- CLI через `main.py`
+- HTTP API на FastAPI
+- простую веб-страницу по адресу `/`
 
-- accepts raw user text about a startup idea
-- converts that text into a validated 8-slide deck JSON
-- exports the result to `.pptx`
-- exposes both CLI and API flows
+## Что умеет
 
-## Project flow
+- принимает произвольное текстовое описание идеи
+- генерирует JSON-структуру презентации из 8 слайдов
+- проверяет схему и базовую достоверность результата
+- экспортирует готовую презентацию в `.pptx`
 
-1. user sends free-form text
-2. LLM converts it into structured deck JSON
-3. backend validates the deck contract
-4. exporter creates a PowerPoint file
+## Как работает
 
-## Setup
+1. Пользователь передает текст с описанием стартапа.
+2. LLM преобразует этот текст в структурированный deck JSON.
+3. Бэкенд валидирует структуру и отбрасывает неподтвержденные детали.
+4. Экспортер собирает `.pptx`-файл.
+
+## Установка
 
 ```powershell
 python -m venv venv
@@ -25,56 +30,79 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Then put your Groq API key into `.env`.
+После этого укажите ключ API Groq в файле `.env`.
 
-## CLI usage
+Пример `.env`:
 
-```powershell
-python main.py "We build AI software for freight brokers that automates quoting, follow-up, and exception handling."
+```env
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+PITCH_MODEL=openai/gpt-oss-120b
+OUTPUT_DIR=generated
 ```
 
-Optional:
+## Использование через CLI
+
+Базовый запуск:
 
 ```powershell
-python main.py "AI workflow assistant for dental clinics" --output dental_deck.pptx --save-json dental_deck.json
+python main.py "Мы делаем AI-сервис для логистических брокеров, который автоматизирует расчёт ставок, follow-up и обработку исключений."
 ```
 
-## API usage
+С сохранением презентации и JSON:
 
-Start the server:
+```powershell
+python main.py "AI-помощник для стоматологических клиник" --output dental_deck.pptx --save-json dental_deck.json
+```
+
+Поддерживаемые аргументы:
+- `idea_text` — свободное описание идеи
+- `--model` — переопределение модели из `.env`
+- `--output` — путь к итоговому `.pptx`
+- `--save-json` — путь для сохранения итогового JSON
+
+## Использование через API
+
+Запуск сервера:
 
 ```powershell
 uvicorn app.api:app --reload
 ```
 
-Generate JSON:
+После запуска будут доступны:
+- `GET /` — простая веб-страница для генерации deck
+- `GET /health` — проверка состояния сервиса
+- `POST /generate/json` — генерация JSON
+- `POST /generate/ppt` — генерация и скачивание PowerPoint
+
+Пример запроса на генерацию JSON:
 
 ```powershell
 curl -X POST "http://127.0.0.1:8000/generate/json" ^
   -H "Content-Type: application/json" ^
-  -d "{\"idea_text\":\"We build AI software for freight brokers that automates quoting, follow-up, and exception handling.\"}"
+  -d "{\"idea_text\":\"Мы создаем AI-сервис для небольших стоматологических клиник, который автоматизирует напоминания, переносы записей и ответы на типовые вопросы пациентов.\"}"
 ```
 
-Generate PPT:
+Пример запроса на генерацию PPT:
 
 ```powershell
 curl -X POST "http://127.0.0.1:8000/generate/ppt" ^
   -H "Content-Type: application/json" ^
-  -d "{\"idea_text\":\"We build AI software for freight brokers that automates quoting, follow-up, and exception handling.\"}" ^
+  -d "{\"idea_text\":\"Мы создаем AI-сервис для небольших стоматологических клиник, который автоматизирует напоминания, переносы записей и ответы на типовые вопросы пациентов.\"}" ^
   --output generated_deck.pptx
 ```
 
-## Current architecture
+## Структура проекта
 
-- [main.py](/d:/VSCode/dnk_project/main.py): CLI entrypoint
-- [app/config.py](/d:/VSCode/dnk_project/app/config.py): environment loading and settings
-- [app/generator.py](/d:/VSCode/dnk_project/app/generator.py): prompt, LLM call, parsing, validation
-- [app/exporter.py](/d:/VSCode/dnk_project/app/exporter.py): PowerPoint export
-- [app/api.py](/d:/VSCode/dnk_project/app/api.py): FastAPI endpoints
+- [main.py](/d:/VSCode/dnk_project/main.py) — CLI-входная точка
+- [app/config.py](/d:/VSCode/dnk_project/app/config.py) — загрузка окружения и настройки
+- [app/generator.py](/d:/VSCode/dnk_project/app/generator.py) — промптинг, вызов модели, парсинг и валидация
+- [app/exporter.py](/d:/VSCode/dnk_project/app/exporter.py) — экспорт в PowerPoint
+- [app/api.py](/d:/VSCode/dnk_project/app/api.py) — FastAPI API и встроенная веб-страница
+- [app/schemas.py](/d:/VSCode/dnk_project/app/schemas.py) — схема deck и структура слайдов
 
-## Next good improvements
+## Ограничения
 
-- add retry and JSON repair flow when the model breaks schema
-- support deck modes like `investor`, `sales`, and `product-demo`
-- add stronger slide styling and templates
-- add tests for parser and validator behavior
+- проект зависит от внешнего LLM API и не работает без `GROQ_API_KEY`
+- качество презентации зависит от полноты исходного описания
+- сервис старается не выдумывать факты, но всё равно требует ручной проверки перед реальным использованием
