@@ -4,14 +4,21 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
+from typing import Literal
 
 from app.config import get_settings, load_dotenv
 from app.exporter import create_ppt
 from app.generator import generate_deck_from_text
+from app.presentation_templates import list_presentation_templates
 
 
 load_dotenv()
 app = FastAPI(title="Pitch Deck MVP API", version="0.1.0")
+
+TEMPLATE_OPTIONS_HTML = "\n".join(
+    f'            <option value="{template.key}">{template.label}</option>'
+    for template in list_presentation_templates()
+)
 
 INDEX_HTML = """
 <!doctype html>
@@ -81,7 +88,7 @@ INDEX_HTML = """
     }
     .grid {
       display: grid;
-      grid-template-columns: 2fr 1fr;
+      grid-template-columns: 2fr 1fr 1fr;
       gap: 16px;
       margin-top: 16px;
     }
@@ -142,6 +149,12 @@ INDEX_HTML = """
           <input id="model" placeholder="Необязательно, можно оставить пустым">
         </div>
         <div>
+          <label for="template">Шаблон</label>
+          <select id="template">
+__TEMPLATE_OPTIONS__
+          </select>
+        </div>
+        <div>
           <label for="mode">Действие</label>
           <select id="mode">
             <option value="json">Сгенерировать JSON</option>
@@ -167,6 +180,7 @@ INDEX_HTML = """
   <script>
     const ideaText = document.getElementById("ideaText");
     const model = document.getElementById("model");
+    const template = document.getElementById("template");
     const mode = document.getElementById("mode");
     const status = document.getElementById("status");
     const output = document.getElementById("output");
@@ -186,7 +200,11 @@ INDEX_HTML = """
         return;
       }
 
-      const payload = { idea_text: text, model: model.value.trim() || null };
+      const payload = {
+        idea_text: text,
+        model: model.value.trim() || null,
+        template: template.value,
+      };
       const target = mode.value === "ppt" ? "/generate/ppt" : "/generate/json";
       status.textContent = "Идет генерация...";
       output.textContent = "Ожидание ответа...";
@@ -231,10 +249,15 @@ INDEX_HTML = """
 </html>
 """
 
+INDEX_HTML = INDEX_HTML.replace("__TEMPLATE_OPTIONS__", TEMPLATE_OPTIONS_HTML)
+
 
 class GenerateRequest(BaseModel):
     idea_text: str = Field(..., min_length=20, description="Свободное описание стартапа.")
     model: str | None = Field(default=None, description="Необязательное переопределение модели.")
+    template: Literal["neutral", "tbank", "sber", "alpha"] = Field(
+        default="neutral", description="Шаблон оформления презентации."
+    )
 
 
 class DeckResponse(BaseModel):
@@ -259,7 +282,11 @@ def health() -> dict[str, str]:
 @app.post("/generate/json", response_model=DeckResponse)
 def generate_json(request: GenerateRequest) -> dict:
     try:
-        deck = generate_deck_from_text(request.idea_text, model=request.model)
+        deck = generate_deck_from_text(
+            request.idea_text,
+            model=request.model,
+            template=request.template,
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -269,11 +296,15 @@ def generate_json(request: GenerateRequest) -> dict:
 @app.post("/generate/ppt")
 def generate_ppt(request: GenerateRequest) -> FileResponse:
     try:
-        deck = generate_deck_from_text(request.idea_text, model=request.model)
+        deck = generate_deck_from_text(
+            request.idea_text,
+            model=request.model,
+            template=request.template,
+        )
         settings = get_settings()
         output_dir = Path(settings.output_dir)
         output_path = output_dir / f"{uuid4().hex}.pptx"
-        create_ppt(deck, str(output_path))
+        create_ppt(deck, str(output_path), template=request.template)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

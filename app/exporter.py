@@ -6,24 +6,16 @@ from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 
+from app.presentation_templates import PresentationTemplate, get_presentation_template
 from app.schemas import PitchDeck
 
 
 SLIDE_WIDTH = Inches(13.333)
 SLIDE_HEIGHT = Inches(7.5)
 
-COLORS = {
-    "bg": RGBColor(246, 243, 236),
-    "card": RGBColor(255, 252, 245),
-    "ink": RGBColor(27, 31, 38),
-    "muted": RGBColor(98, 105, 117),
-    "accent": RGBColor(201, 92, 55),
-    "accent_dark": RGBColor(125, 51, 28),
-    "line": RGBColor(224, 214, 196),
-}
 
-TITLE_FONT = "Aptos Display"
-BODY_FONT = "Aptos"
+def _rgb(color: tuple[int, int, int]) -> RGBColor:
+    return RGBColor(*color)
 
 
 def _set_background(slide, color: RGBColor) -> None:
@@ -42,8 +34,15 @@ def _add_textbox(slide, left, top, width, height, text: str):
     return box
 
 
-def _style_textbox(box, *, font_name: str, font_size: int, color: RGBColor, bold: bool = False,
-                   align=PP_ALIGN.LEFT) -> None:
+def _style_textbox(
+    box,
+    *,
+    font_name: str,
+    font_size: int,
+    color: RGBColor,
+    bold: bool = False,
+    align=PP_ALIGN.LEFT,
+) -> None:
     paragraph = box.text_frame.paragraphs[0]
     paragraph.alignment = align
     run = paragraph.runs[0]
@@ -53,9 +52,9 @@ def _style_textbox(box, *, font_name: str, font_size: int, color: RGBColor, bold
     run.font.color.rgb = color
 
 
-def _add_title_slide(prs: Presentation, deck: PitchDeck) -> None:
+def _add_title_slide(prs: Presentation, deck: PitchDeck, theme: PresentationTemplate) -> None:
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    _set_background(slide, COLORS["bg"])
+    _set_background(slide, _rgb(theme.background))
 
     accent_bar = slide.shapes.add_shape(
         MSO_AUTO_SHAPE_TYPE.RECTANGLE,
@@ -65,7 +64,7 @@ def _add_title_slide(prs: Presentation, deck: PitchDeck) -> None:
         Inches(5.9),
     )
     accent_bar.fill.solid()
-    accent_bar.fill.fore_color.rgb = COLORS["accent"]
+    accent_bar.fill.fore_color.rgb = _rgb(theme.accent)
     accent_bar.line.fill.background()
 
     eyebrow = _add_textbox(
@@ -78,9 +77,9 @@ def _add_title_slide(prs: Presentation, deck: PitchDeck) -> None:
     )
     _style_textbox(
         eyebrow,
-        font_name=BODY_FONT,
+        font_name=theme.body_font,
         font_size=12,
-        color=COLORS["accent_dark"],
+        color=_rgb(theme.accent_dark),
         bold=True,
     )
 
@@ -94,9 +93,9 @@ def _add_title_slide(prs: Presentation, deck: PitchDeck) -> None:
     )
     _style_textbox(
         title,
-        font_name=TITLE_FONT,
+        font_name=theme.title_font,
         font_size=28,
-        color=COLORS["ink"],
+        color=_rgb(theme.ink),
         bold=True,
     )
 
@@ -110,9 +109,9 @@ def _add_title_slide(prs: Presentation, deck: PitchDeck) -> None:
     )
     _style_textbox(
         subtitle,
-        font_name=BODY_FONT,
+        font_name=theme.body_font,
         font_size=18,
-        color=COLORS["muted"],
+        color=_rgb(theme.muted),
     )
 
     info_card = slide.shapes.add_shape(
@@ -123,8 +122,8 @@ def _add_title_slide(prs: Presentation, deck: PitchDeck) -> None:
         Inches(5.75),
     )
     info_card.fill.solid()
-    info_card.fill.fore_color.rgb = COLORS["card"]
-    info_card.line.color.rgb = COLORS["line"]
+    info_card.fill.fore_color.rgb = _rgb(theme.surface)
+    info_card.line.color.rgb = _rgb(theme.line)
 
     info_title = _add_textbox(
         slide,
@@ -136,43 +135,29 @@ def _add_title_slide(prs: Presentation, deck: PitchDeck) -> None:
     )
     _style_textbox(
         info_title,
-        font_name=TITLE_FONT,
+        font_name=theme.title_font,
         font_size=18,
-        color=COLORS["ink"],
+        color=_rgb(theme.ink),
         bold=True,
     )
 
-    tone_label = _add_textbox(
+    gaps_label = _add_textbox(
         slide,
         Inches(9.25),
         Inches(1.85),
         Inches(2.7),
         Inches(0.35),
-        "Tone",
-    )
-    _style_textbox(tone_label, font_name=BODY_FONT, font_size=10, color=COLORS["muted"], bold=True)
-
-    tone_value = _add_textbox(
-        slide,
-        Inches(9.25),
-        Inches(2.08),
-        Inches(2.7),
-        Inches(0.45),
-        deck.tone.capitalize(),
-    )
-    _style_textbox(tone_value, font_name=BODY_FONT, font_size=14, color=COLORS["ink"])
-
-    gaps_label = _add_textbox(
-        slide,
-        Inches(9.25),
-        Inches(2.8),
-        Inches(2.7),
-        Inches(0.35),
         "Open Questions",
     )
-    _style_textbox(gaps_label, font_name=BODY_FONT, font_size=10, color=COLORS["muted"], bold=True)
+    _style_textbox(
+        gaps_label,
+        font_name=theme.body_font,
+        font_size=10,
+        color=_rgb(theme.muted),
+        bold=True,
+    )
 
-    gaps_frame = slide.shapes.add_textbox(Inches(9.2), Inches(3.15), Inches(2.85), Inches(2.8)).text_frame
+    gaps_frame = slide.shapes.add_textbox(Inches(9.2), Inches(2.15), Inches(2.85), Inches(3.85)).text_frame
     gaps_frame.word_wrap = True
     gaps_frame.clear()
 
@@ -184,20 +169,26 @@ def _add_title_slide(prs: Presentation, deck: PitchDeck) -> None:
             paragraph.space_after = Pt(10)
             paragraph.bullet = True
             run = paragraph.runs[0]
-            run.font.name = BODY_FONT
+            run.font.name = theme.body_font
             run.font.size = Pt(11)
-            run.font.color.rgb = COLORS["ink"]
+            run.font.color.rgb = _rgb(theme.ink)
     else:
         gaps_frame.paragraphs[0].text = "No major information gaps surfaced."
         run = gaps_frame.paragraphs[0].runs[0]
-        run.font.name = BODY_FONT
+        run.font.name = theme.body_font
         run.font.size = Pt(11)
-        run.font.color.rgb = COLORS["muted"]
+        run.font.color.rgb = _rgb(theme.muted)
 
 
-def _add_content_slide(prs: Presentation, slide_number: int, title_text: str, bullets: list[str]) -> None:
+def _add_content_slide(
+    prs: Presentation,
+    slide_number: int,
+    title_text: str,
+    bullets: list[str],
+    theme: PresentationTemplate,
+) -> None:
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    _set_background(slide, COLORS["bg"])
+    _set_background(slide, _rgb(theme.background))
 
     top_rule = slide.shapes.add_shape(
         MSO_AUTO_SHAPE_TYPE.RECTANGLE,
@@ -207,7 +198,7 @@ def _add_content_slide(prs: Presentation, slide_number: int, title_text: str, bu
         Inches(0.08),
     )
     top_rule.fill.solid()
-    top_rule.fill.fore_color.rgb = COLORS["accent"]
+    top_rule.fill.fore_color.rgb = _rgb(theme.accent)
     top_rule.line.fill.background()
 
     slide_num = _add_textbox(
@@ -220,9 +211,9 @@ def _add_content_slide(prs: Presentation, slide_number: int, title_text: str, bu
     )
     _style_textbox(
         slide_num,
-        font_name=BODY_FONT,
+        font_name=theme.body_font,
         font_size=11,
-        color=COLORS["accent_dark"],
+        color=_rgb(theme.accent_dark),
         bold=True,
     )
 
@@ -236,9 +227,9 @@ def _add_content_slide(prs: Presentation, slide_number: int, title_text: str, bu
     )
     _style_textbox(
         title,
-        font_name=TITLE_FONT,
+        font_name=theme.title_font,
         font_size=24,
-        color=COLORS["ink"],
+        color=_rgb(theme.ink),
         bold=True,
     )
 
@@ -252,9 +243,9 @@ def _add_content_slide(prs: Presentation, slide_number: int, title_text: str, bu
     )
     _style_textbox(
         subtitle,
-        font_name=BODY_FONT,
+        font_name=theme.body_font,
         font_size=11,
-        color=COLORS["muted"],
+        color=_rgb(theme.muted),
     )
 
     positions = [
@@ -273,8 +264,8 @@ def _add_content_slide(prs: Presentation, slide_number: int, title_text: str, bu
             Inches(3.35),
         )
         card.fill.solid()
-        card.fill.fore_color.rgb = COLORS["card"]
-        card.line.color.rgb = COLORS["line"]
+        card.fill.fore_color.rgb = _rgb(theme.surface)
+        card.line.color.rgb = _rgb(theme.line)
 
         badge = slide.shapes.add_shape(
             MSO_AUTO_SHAPE_TYPE.OVAL,
@@ -284,7 +275,7 @@ def _add_content_slide(prs: Presentation, slide_number: int, title_text: str, bu
             Inches(0.42),
         )
         badge.fill.solid()
-        badge.fill.fore_color.rgb = COLORS["accent"]
+        badge.fill.fore_color.rgb = _rgb(theme.accent)
         badge.line.fill.background()
 
         badge_text = _add_textbox(
@@ -297,7 +288,7 @@ def _add_content_slide(prs: Presentation, slide_number: int, title_text: str, bu
         )
         _style_textbox(
             badge_text,
-            font_name=BODY_FONT,
+            font_name=theme.body_font,
             font_size=10,
             color=RGBColor(255, 255, 255),
             bold=True,
@@ -314,25 +305,26 @@ def _add_content_slide(prs: Presentation, slide_number: int, title_text: str, bu
         )
         _style_textbox(
             bullet_box,
-            font_name=BODY_FONT,
+            font_name=theme.body_font,
             font_size=17,
-            color=COLORS["ink"],
+            color=_rgb(theme.ink),
             bold=True,
         )
 
 
-def create_ppt(deck: PitchDeck, output_path: str) -> str:
+def create_ppt(deck: PitchDeck, output_path: str, template: str | None = None) -> str:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
+    theme = get_presentation_template(template)
 
     prs = Presentation()
     prs.slide_width = SLIDE_WIDTH
     prs.slide_height = SLIDE_HEIGHT
 
-    _add_title_slide(prs, deck)
+    _add_title_slide(prs, deck, theme)
 
     for slide_number, slide_data in enumerate(deck.slides[1:], start=2):
-        _add_content_slide(prs, slide_number, slide_data.title, slide_data.bullets)
+        _add_content_slide(prs, slide_number, slide_data.title, slide_data.bullets, theme)
 
     prs.save(output)
     return str(output)

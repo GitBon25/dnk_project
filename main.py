@@ -5,6 +5,7 @@ from pathlib import Path
 from app.config import load_dotenv
 from app.exporter import create_ppt
 from app.generator import generate_deck_from_text
+from app.presentation_templates import list_presentation_templates
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -19,6 +20,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         help="Необязательное переопределение модели из настроек окружения.",
+    )
+    parser.add_argument(
+        "--template",
+        choices=[template.key for template in list_presentation_templates()],
+        default="neutral",
+        help="Шаблон оформления презентации.",
     )
     parser.add_argument(
         "--output",
@@ -42,7 +49,7 @@ def main() -> None:
         raise RuntimeError("Описание идеи обязательно.")
 
     print("Генерирую структуру презентации...")
-    deck = generate_deck_from_text(idea_text, model=args.model)
+    deck = generate_deck_from_text(idea_text, model=args.model, template=args.template)
 
     if args.save_json:
         Path(args.save_json).write_text(
@@ -51,7 +58,7 @@ def main() -> None:
         )
 
     print("Создаю PPT...")
-    create_ppt(deck, args.output)
+    create_ppt(deck, args.output, template=args.template)
     print(f"Готово! Файл сохранен в {args.output}")
 
 

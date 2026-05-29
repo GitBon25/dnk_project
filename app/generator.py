@@ -6,6 +6,7 @@ from openai import OpenAI
 
 from app.config import get_settings
 from app.schemas import PitchDeck, SLIDE_STRUCTURE, Slide
+from app.presentation_templates import PresentationTemplate, get_presentation_template
 
 UNSUPPORTED_SPECIFIC_PHRASES = [
     "whatsapp",
@@ -31,8 +32,236 @@ UNSUPPORTED_SPECIFIC_PHRASES = [
     "вебинары",
 ]
 
+UNSUPPORTED_ABSENCE_PHRASES = [
+    "не указано",
+    "неизвестно",
+    "не хватает данных",
+    "недостаточно данных",
+    "не хватает информации",
+    "нет данных",
+    "не определено",
+    "не раскрыто",
+    "не уточнено",
+    "неясно",
+    "without data",
+    "no data",
+    "unknown",
+]
+
 MAX_GENERATION_ATTEMPTS = 2
 MAX_GUARDRAIL_REWRITES = 2
+MAX_ABSENCE_REWRITES = 2
+
+TEMPLATE_BRAND_ALIASES = {
+    "tbank": {"tbank", "t-bank", "тбанк", "т-банк", "т банк", "тинькофф", "tinkoff"},
+    "sber": {"sber", "сбер", "сбербанк"},
+    "alpha": {"alpha", "альфа", "альфа-банк", "alfa", "alfabank"},
+}
+
+
+def _fallback_slide_bullets(title: str, template: PresentationTemplate) -> list[str]:
+    style_prefix = {
+        "tbank": "Делаем ставку на скорость, ясность и операционную эффективность.",
+        "sber": "Держим фокус на надежности, системности и долгом горизонте роста.",
+        "alpha": "Подчеркиваем энергию, заметный эффект и современную подачу.",
+    }.get(
+        template.key,
+        "Держим фокус на ясной ценности, реалистичности и сильной подаче.",
+    )
+
+    fallback_map = {
+        "Титул": [
+            "Позиционируем продукт через понятную ценность и сильный первый экран.",
+            style_prefix,
+            "Сразу задаем уверенный контекст для дальнейшего рассказа.",
+        ],
+        "Проблема": [
+            "Проблема описана через повторяющуюся операционную боль клиента.",
+            "Команда теряет время на ручные действия и координацию.",
+            "Боль напрямую влияет на качество сервиса и скорость работы.",
+        ],
+        "Решение": [
+            "Продукт снимает рутину и делает процесс более предсказуемым.",
+            "Клиент получает более быстрый и прозрачный рабочий контур.",
+            "Решение можно внедрять без сложной перестройки процессов.",
+        ],
+        "Продукт": [
+            "Сценарий использования остается простым и понятным для команды.",
+            "Автоматизация забирает на себя повторяющиеся действия.",
+            "Первые эффекты видны уже на базовом рабочем потоке.",
+        ],
+        "Рынок": [
+            "Спрос возникает там, где есть частые и дорогие повторения.",
+            "Покупатель выбирает решение через операционную пользу, а не обещания.",
+            "Рынок поддерживается цифровизацией и ростом ожиданий к скорости.",
+        ],
+        "Бизнес-модель": [
+            "Монетизация строится на понятной и повторяемой подписке.",
+            "Дополнительная ценность раскрывается через расширенные функции и сценарии.",
+            "Выручка масштабируется по мере углубления использования продукта.",
+        ],
+        "Выход на рынок": [
+            "Стартуем с узкого сценария, где ценность видна быстрее всего.",
+            "Первые клиенты приходят через прямую работу и рекомендации.",
+            "Дальше расширяемся в соседние процессы и команды.",
+        ],
+        "Видение": [
+            "Платформа может стать системным слоем операционной работы.",
+            "Долгосрочное преимущество строится на данных и повторяемом workflow.",
+            "Продукт получает потенциал к расширению в широкую экосистему.",
+        ],
+    }
+
+    return fallback_map.get(
+        title,
+        [
+            "Формулировка остается ясной, прагматичной и инвесторски читаемой.",
+            "Делаем акцент на ценности для клиента и логике продукта.",
+            "Сохраняем сильный тон без лишней конкретики и обещаний.",
+        ],
+    )
+
+
+def _normalize_name_token(value: str) -> str:
+    return re.sub(r"[^a-zа-я0-9]+", "", _normalize_text(value))
+
+
+def _is_brand_template_name(name: str, template: PresentationTemplate) -> bool:
+    normalized = _normalize_name_token(name)
+    aliases = {_normalize_name_token(template.label), _normalize_name_token(template.key)}
+    aliases.update(_normalize_name_token(alias) for alias in TEMPLATE_BRAND_ALIASES.get(template.key, set()))
+    return bool(normalized) and normalized in aliases
+
+
+def _infer_startup_name_from_text(user_text: str, one_liner: str | None = None) -> str:
+    quoted_patterns = [
+        r"«([^»]{2,40})»",
+        r'"([^"]{2,40})"',
+    ]
+    for pattern in quoted_patterns:
+        match = re.search(pattern, user_text)
+        if match:
+            candidate = match.group(1).strip(" .,:;!?\n\t")
+            if len(candidate) >= 2:
+                return candidate
+
+    phrase_patterns = [
+        r"(?:продукт|сервис|платформа|решение|стартап|проект|система|ассистент|помощник)\s+(?:под названием\s+)?([A-ZА-Я][A-Za-zА-Яа-я0-9\-]{1,40}(?:\s+[A-ZА-Я][A-Za-zА-Яа-я0-9\-]{1,30}){0,2})",
+        r"([A-ZА-Я][A-Za-zА-Яа-я0-9\-]{2,30}(?:\s+[A-ZА-Я][A-Za-zА-Яа-я0-9\-]{2,30}){0,2})\s+(?:для|помогает|автоматизирует|сервис|платформа)",
+    ]
+    for pattern in phrase_patterns:
+        match = re.search(pattern, user_text)
+        if match:
+            candidate = match.group(1).strip(" .,:;!?\n\t")
+            if len(candidate) >= 2:
+                return candidate
+
+    if one_liner:
+        stopwords = {
+            "для",
+            "и",
+            "или",
+            "как",
+            "что",
+            "это",
+            "на",
+            "по",
+            "из",
+            "за",
+            "в",
+            "во",
+            "с",
+            "со",
+            "of",
+            "to",
+            "for",
+            "and",
+            "with",
+            "from",
+            "that",
+            "this",
+            "into",
+            "the",
+            "a",
+            "an",
+            "on",
+            "at",
+            "by",
+            "or",
+        }
+        cleaned_words = [
+            word.strip(" .,:;!?\n\t")
+            for word in re.split(r"\s+", one_liner)
+            if word.strip(" .,:;!?\n\t")
+        ]
+        useful_words = [
+            word
+            for word in cleaned_words
+            if len(word) > 2 and word.lower().strip("-") not in stopwords
+        ]
+        if useful_words:
+            candidate = " ".join(useful_words[:2]).strip()
+            return candidate[:1].upper() + candidate[1:] if candidate else "Новый продукт"
+
+    return "Новый продукт"
+
+
+def build_startup_name_fix_prompt(
+    user_text: str,
+    one_liner: str,
+    current_name: str,
+    template: PresentationTemplate,
+) -> str:
+    return f"""
+Исправь только название продукта.
+
+Требования:
+- Название должно быть названием самого продукта или компании, а не названием шаблона.
+- Не используй: {template.label}
+- Название должно звучать как реальное имя продукта из исходного контекста.
+- Если в тексте нет явного имени, придумай короткое, уместное и нейтральное название по смыслу продукта.
+- Верни только JSON вида {{"startup_name":"..."}}.
+
+Исходный текст пользователя:
+{user_text}
+
+One-liner:
+{one_liner}
+
+Текущее название:
+{current_name}
+""".strip()
+
+
+def _rewrite_startup_name(
+    client: OpenAI,
+    selected_model: str,
+    user_text: str,
+    one_liner: str,
+    current_name: str,
+    template: PresentationTemplate,
+) -> str:
+    prompt = build_startup_name_fix_prompt(user_text, one_liner, current_name, template)
+    response = client.chat.completions.create(
+        model=selected_model,
+        temperature=0.2,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Ты исправляешь только название продукта в JSON. "
+                    "Верни только валидный JSON с одним полем startup_name."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+    )
+    raw_response = response.choices[0].message.content or ""
+    payload = parse_json_response(raw_response)
+    candidate = payload.get("startup_name")
+    if isinstance(candidate, str) and candidate.strip() and not _is_brand_template_name(candidate, template):
+        return candidate.strip()
+    return _infer_startup_name_from_text(user_text, one_liner)
 
 
 def get_client() -> OpenAI:
@@ -43,12 +272,18 @@ def get_client() -> OpenAI:
     )
 
 
-def build_prompt(user_text: str) -> str:
+def build_prompt(user_text: str, template: PresentationTemplate) -> str:
     slide_list = "\n".join(f"{index + 1}. {name}" for index, name in enumerate(SLIDE_STRUCTURE))
     return f"""
 Ты опытный стратег по стартап-нарративу, редактор инвестиционных презентаций и советник ранних стадий.
 
 Твоя задача — превратить свободный текст основателя в четкую, правдоподобную и качественную презентацию ранней стадии.
+
+Выбранный визуально-редакционный шаблон:
+- Название: {template.label}
+- Характер: {template.description}
+- Стиль: {template.prompt_guidance}
+- Шаблон влияет только на визуальный и редакционный стиль, но не на название продукта.
 
 Исходный текст пользователя:
 {user_text}
@@ -70,7 +305,9 @@ def build_prompt(user_text: str) -> str:
 - Не выдумывай TAM, SAM, SOM, количество клиник, цены, проценты, сроки и численные оценки, если пользователь их не дал.
 - Не добавляй страны, регионы и географические рынки, если пользователь их прямо не указал.
 - Если число или цена неизвестны, используй качественное описание без чисел.
-- Если информации не хватает, сохрани правдоподобность и укажи пробелы в поле "info_gaps".
+- Если информации не хватает, не проговаривай это прямо в слайдах.
+- Замещай отсутствие конкретики более общими, но сильными формулировками.
+- Поле "info_gaps" используй только для действительно критичных пробелов, и по возможности оставляй его пустым.
 
 Требования к качеству текста:
 - Пиши как сильный основатель, обращающийся к прагматичным инвесторам.
@@ -91,6 +328,8 @@ def build_prompt(user_text: str) -> str:
 
 Требования к полям:
 - "startup_name": короткое и правдоподобное название.
+- "startup_name" должно быть названием самого продукта или компании из исходного контекста, а не названием шаблона.
+- Если явного имени нет, придумай короткое название по смыслу продукта, но не используй название шаблона.
 - "one_liner": одно предложение с сутью продукта и ценности.
 - "audience": для кого сделана презентация.
 - "tone": короткая характеристика тона, например "прагматичный" или "инвесторский".
@@ -137,9 +376,14 @@ JSON schema:
 """.strip()
 
 
-def build_repair_prompt(user_text: str, issues: str) -> str:
+def build_repair_prompt(user_text: str, issues: str, template: PresentationTemplate) -> str:
     return f"""
 Предыдущая версия deck содержала неподтвержденные детали.
+
+Соблюдай стиль шаблона:
+- Название: {template.label}
+- Характер: {template.description}
+- Шаблон не должен попадать в название продукта.
 
 Исходный текст пользователя:
 {user_text}
@@ -149,7 +393,10 @@ def build_repair_prompt(user_text: str, issues: str) -> str:
 
 Инструкции по исправлению:
 - Полностью перегенерируй deck заново.
+- Название продукта должно быть отдельным, не брендом шаблона.
 - Удали или перепиши все неподтвержденные детали.
+- Не проговаривай отсутствие данных, нехватку информации или неизвестные значения.
+- Если конкретика отсутствует, сформулируй мысль более широко и уверенно.
 - Не добавляй каналы, партнеров, цены, размеры рынка, числа, сроки и тактики, если их нет в тексте пользователя.
 - Сохрани качество и читабельность для инвестора.
 - Верни только валидный JSON по той же схеме.
@@ -167,6 +414,7 @@ def build_json_fix_prompt(raw_response: str) -> str:
 - Не добавляй пояснения.
 - Не используй markdown.
 - Сохрани ту же схему.
+- Если в тексте есть прямые упоминания о нехватке данных, замени их на более нейтральную формулировку или убери.
 - Все текстовые значения должны остаться на русском языке, если они уже были на русском.
 
 Поврежденный JSON:
@@ -174,10 +422,20 @@ def build_json_fix_prompt(raw_response: str) -> str:
 """.strip()
 
 
-def build_grounding_rewrite_prompt(user_text: str, deck_payload: dict[str, Any], issues: str) -> str:
+def build_grounding_rewrite_prompt(
+    user_text: str,
+    deck_payload: dict[str, Any],
+    issues: str,
+    template: PresentationTemplate,
+) -> str:
     payload_json = json.dumps(deck_payload, ensure_ascii=False, indent=2)
     return f"""
 Перепиши deck ниже так, чтобы он оставался строго привязан к исходному тексту пользователя.
+
+Сохраняй стиль шаблона:
+- Название: {template.label}
+- Характер: {template.description}
+- Шаблон влияет на стиль, но не на имя продукта.
 
 Исходный текст пользователя:
 {user_text}
@@ -190,9 +448,11 @@ def build_grounding_rewrite_prompt(user_text: str, deck_payload: dict[str, Any],
 
 Правила переписывания:
 - Сохрани ту же JSON-схему и тот же порядок слайдов.
+- Не используй название шаблона в startup_name.
 - Переписывай только то, что нужно для удаления неподтвержденных деталей.
 - Заменяй выдуманную конкретику на более общие, но правдоподобные формулировки.
 - Не добавляй новые каналы, партнеров, числа, географию, пилоты, кейсы или цены, если их нет в исходном тексте.
+- Убирай прямые фразы про нехватку данных, неизвестность или отсутствие информации.
 - Сохрани качество текста и читаемость для инвестора.
 - Верни только валидный JSON.
 - Все текстовые значения должны быть на русском языке.
@@ -328,6 +588,53 @@ def validate_invented_specifics(deck: PitchDeck, user_text: str) -> None:
         )
 
 
+def find_absence_mentions(deck: PitchDeck) -> list[str]:
+    deck_text = _collect_deck_text(deck)
+    findings: list[str] = []
+
+    for phrase in UNSUPPORTED_ABSENCE_PHRASES:
+        if phrase in deck_text:
+            findings.append(f"прямое упоминание нехватки данных: '{phrase}'")
+
+    return findings
+
+
+def normalize_pitch_deck_payload(payload: dict[str, Any], template: PresentationTemplate) -> dict[str, Any]:
+    normalized = dict(payload) if isinstance(payload, dict) else {}
+
+    slides_raw = normalized.get("slides")
+    if not isinstance(slides_raw, list):
+        slides_raw = []
+
+    normalized_slides: list[dict[str, Any]] = []
+    for index, expected_title in enumerate(SLIDE_STRUCTURE):
+        slide = slides_raw[index] if index < len(slides_raw) and isinstance(slides_raw[index], dict) else {}
+        bullets_raw = slide.get("bullets") if isinstance(slide, dict) else []
+        if not isinstance(bullets_raw, list):
+            bullets_raw = []
+
+        clean_bullets = [bullet.strip() for bullet in bullets_raw if isinstance(bullet, str) and bullet.strip()]
+        fallback_bullets = _fallback_slide_bullets(expected_title, template)
+
+        if len(clean_bullets) < 3:
+            for fallback_bullet in fallback_bullets:
+                if len(clean_bullets) >= 3:
+                    break
+                if fallback_bullet not in clean_bullets:
+                    clean_bullets.append(fallback_bullet)
+
+        if len(clean_bullets) > 3:
+            clean_bullets = clean_bullets[:3]
+
+        if len(clean_bullets) < 3:
+            clean_bullets.extend(fallback_bullets[len(clean_bullets) : 3])
+
+        normalized_slides.append({"title": expected_title, "bullets": clean_bullets})
+
+    normalized["slides"] = normalized_slides
+    return normalized
+
+
 def _repair_json_response(client: OpenAI, selected_model: str, raw_response: str) -> dict[str, Any]:
     repair_prompt = build_json_fix_prompt(_extract_json_candidate(raw_response))
     response = client.chat.completions.create(
@@ -353,8 +660,11 @@ def _rewrite_grounded_payload(
     user_text: str,
     deck_payload: dict[str, Any],
     issues: list[str],
+    template: PresentationTemplate,
 ) -> dict[str, Any]:
-    rewrite_prompt = build_grounding_rewrite_prompt(user_text, deck_payload, "; ".join(issues))
+    rewrite_prompt = build_grounding_rewrite_prompt(
+        user_text, deck_payload, "; ".join(issues), template
+    )
     response = client.chat.completions.create(
         model=selected_model,
         temperature=0.2,
@@ -376,15 +686,48 @@ def _rewrite_grounded_payload(
         return _repair_json_response(client, selected_model, raw_response)
 
 
+def _rewrite_absence_mentions(
+    client: OpenAI,
+    selected_model: str,
+    user_text: str,
+    deck_payload: dict[str, Any],
+    issues: list[str],
+    template: PresentationTemplate,
+) -> dict[str, Any]:
+    rewrite_prompt = build_grounding_rewrite_prompt(
+        user_text, deck_payload, "; ".join(issues), template
+    )
+    response = client.chat.completions.create(
+        model=selected_model,
+        temperature=0.2,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Ты переписываешь JSON-презентацию стартапа, чтобы убрать прямые упоминания о нехватке данных. "
+                    "Верни только валидный JSON по той же схеме и на русском языке."
+                ),
+            },
+            {"role": "user", "content": rewrite_prompt},
+        ],
+    )
+    raw_response = response.choices[0].message.content or ""
+    try:
+        return parse_json_response(raw_response)
+    except ValueError:
+        return _repair_json_response(client, selected_model, raw_response)
+
+
 def _generate_payload(
     client: OpenAI,
     selected_model: str,
     user_text: str,
+    template: PresentationTemplate,
     repair_issues: str | None = None,
 ) -> dict[str, Any]:
-    base_prompt = build_prompt(user_text)
+    base_prompt = build_prompt(user_text, template)
     if repair_issues:
-        user_prompt = base_prompt + "\n\n" + build_repair_prompt(user_text, repair_issues)
+        user_prompt = base_prompt + "\n\n" + build_repair_prompt(user_text, repair_issues, template)
     else:
         user_prompt = base_prompt
 
@@ -398,6 +741,7 @@ def _generate_payload(
                     "Ты строгий генератор JSON-презентаций для стартапов. "
                     "Ты возвращаешь только валидный JSON по заданной схеме. "
                     "Ты пишешь все значения на русском языке. "
+                    "Название продукта в startup_name должно быть названием самого продукта или компании, а не названием шаблона. "
                     "Ты не выдумываешь числа, цены, размеры рынка, географию и неподтвержденные детали."
                 ),
             },
@@ -417,32 +761,115 @@ def _soften_grounding_issues(
     selected_model: str,
     user_text: str,
     payload: dict[str, Any],
+    template: PresentationTemplate,
 ) -> dict[str, Any]:
     current_payload = payload
     for _ in range(MAX_GUARDRAIL_REWRITES):
+        current_payload = normalize_pitch_deck_payload(current_payload, template)
         deck = validate_pitch_deck(current_payload)
         findings = find_invented_specifics(deck, user_text)
         if not findings:
             return current_payload
         current_payload = _rewrite_grounded_payload(
-            client, selected_model, user_text, current_payload, findings
+            client, selected_model, user_text, current_payload, findings, template
         )
     return current_payload
 
 
-def generate_deck_from_text(user_text: str, model: str | None = None) -> PitchDeck:
+def _soften_absence_mentions(
+    client: OpenAI,
+    selected_model: str,
+    user_text: str,
+    payload: dict[str, Any],
+    template: PresentationTemplate,
+) -> dict[str, Any]:
+    current_payload = payload
+    for _ in range(MAX_ABSENCE_REWRITES):
+        current_payload = normalize_pitch_deck_payload(current_payload, template)
+        deck = validate_pitch_deck(current_payload)
+        findings = find_absence_mentions(deck)
+        if not findings:
+            return current_payload
+        current_payload = _rewrite_absence_mentions(
+            client, selected_model, user_text, current_payload, findings, template
+        )
+    return current_payload
+
+
+def _ensure_product_name(
+    client: OpenAI,
+    selected_model: str,
+    user_text: str,
+    payload: dict[str, Any],
+    template: PresentationTemplate,
+) -> dict[str, Any]:
+    current_payload = dict(payload)
+    current_name = current_payload.get("startup_name")
+    one_liner = current_payload.get("one_liner")
+
+    if not isinstance(current_name, str) or not current_name.strip():
+        current_payload["startup_name"] = _infer_startup_name_from_text(
+            user_text, one_liner if isinstance(one_liner, str) else None
+        )
+        return current_payload
+
+    if _is_brand_template_name(current_name, template):
+        fixed_name = _rewrite_startup_name(
+            client,
+            selected_model,
+            user_text,
+            one_liner if isinstance(one_liner, str) else "",
+            current_name,
+            template,
+        )
+        current_payload["startup_name"] = fixed_name
+
+    return current_payload
+
+
+def generate_deck_from_text(
+    user_text: str,
+    model: str | None = None,
+    template: str | None = None,
+) -> PitchDeck:
     settings = get_settings()
     client = get_client()
     selected_model = model or settings.model
+    selected_template = get_presentation_template(template)
     last_error: Exception | None = None
     repair_issues: str | None = None
 
     for _ in range(MAX_GENERATION_ATTEMPTS):
         try:
-            payload = _generate_payload(client, selected_model, user_text, repair_issues)
-            payload = _soften_grounding_issues(client, selected_model, user_text, payload)
+            payload = _generate_payload(
+                client,
+                selected_model,
+                user_text,
+                selected_template,
+                repair_issues,
+            )
+            payload = normalize_pitch_deck_payload(payload, selected_template)
+            payload = _ensure_product_name(
+                client, selected_model, user_text, payload, selected_template
+            )
+            payload = _soften_grounding_issues(
+                client, selected_model, user_text, payload, selected_template
+            )
+            payload = _soften_absence_mentions(
+                client, selected_model, user_text, payload, selected_template
+            )
+            payload = normalize_pitch_deck_payload(payload, selected_template)
+            payload = _ensure_product_name(
+                client, selected_model, user_text, payload, selected_template
+            )
             deck = validate_pitch_deck(payload)
             validate_invented_specifics(deck, user_text)
+            absence_mentions = find_absence_mentions(deck)
+            if absence_mentions:
+                raise ValueError(
+                    "Deck содержит прямые упоминания о нехватке данных: "
+                    + "; ".join(absence_mentions)
+                )
             return deck
         except ValueError as exc:
             last_error = exc
